@@ -81,12 +81,21 @@ data class UIMessage(
             parts = listOf(UIMessagePart.Text(prompt))
         )
 
+        fun compressedHistory(summary: String) = UIMessage(
+            role = MessageRole.USER,
+            parts = listOf(UIMessagePart.Text(summary)),
+            annotations = listOf(UIMessageAnnotation.CompressedHistory),
+        )
+
         fun assistant(prompt: String) = UIMessage(
             role = MessageRole.ASSISTANT,
             parts = listOf(UIMessagePart.Text(prompt))
         )
     }
 }
+
+fun UIMessage.isCompressedHistory(): Boolean =
+    annotations.any { it is UIMessageAnnotation.CompressedHistory }
 
 /**
  * 判断这个消息是否有有任何用户**可输入内容**

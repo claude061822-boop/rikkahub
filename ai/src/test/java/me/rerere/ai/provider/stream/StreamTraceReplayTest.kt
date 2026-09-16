@@ -406,6 +406,9 @@ class StreamTraceReplayTest {
         putJsonArray("annotations") {
             annotations.forEach { annotation ->
                 when (annotation) {
+                    UIMessageAnnotation.CompressedHistory -> add(buildJsonObject {
+                        put("type", "compressed_history")
+                    })
                     is UIMessageAnnotation.UrlCitation -> add(buildJsonObject {
                         put("type", "url_citation")
                         put("title", annotation.title)

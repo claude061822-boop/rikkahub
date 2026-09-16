@@ -1059,10 +1059,10 @@ class ChatService(
                 .awaitAll()
         }
 
-        // Create new conversation with compressed history as multiple user messages + kept messages
+        // Create new conversation with provenance-marked compressed history + kept messages
         val newMessageNodes = buildList {
             compressedSummaries.forEach { summary ->
-                add(UIMessage.user(summary).toMessageNode())
+                add(UIMessage.compressedHistory(summary).toMessageNode())
             }
             addAll(messagesToKeep.map { it.toMessageNode() })
         }

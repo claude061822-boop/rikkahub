@@ -6,6 +6,10 @@ import kotlinx.serialization.Serializable
 @Serializable
 sealed class UIMessageAnnotation {
     @Serializable
+    @SerialName("compressed_history")
+    data object CompressedHistory : UIMessageAnnotation()
+
+    @Serializable
     @SerialName("url_citation")
     data class UrlCitation(
         val title: String,

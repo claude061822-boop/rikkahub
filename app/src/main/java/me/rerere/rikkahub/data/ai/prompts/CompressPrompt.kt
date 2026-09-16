@@ -1,16 +1,22 @@
 package me.rerere.rikkahub.data.ai.prompts
 
 internal val DEFAULT_COMPRESS_PROMPT = """
-    You are a conversation compression assistant. Compress the following conversation into a concise summary.
+    Compress the following conversation into a concise, factual continuity record for later turns.
 
     Requirements:
-    1. Preserve key facts, decisions, and important context that would be needed to continue the conversation
+    1. Preserve important statements with clear speaker attribution, confirmed facts, decisions, unresolved tasks, current state, relationship facts, and context needed to continue the conversation
     2. Keep the summary in the same language as the original conversation
     3. Target approximately {target_tokens} tokens
     4. Output the summary directly without any explanations or meta-commentary
-    5. Format the summary as context information that can be used to continue the conversation
+    5. State information as historical facts, using concise speaker-attributed sentences or bullets
     6. Use {locale} language
-    7. Start the output with a clear indicator that this is a summary (e.g., "[Summary of previous conversation]" or equivalent in the target language)
+
+    Do not:
+    - Address the assistant with instructions such as "You are" or "You should"
+    - Prescribe behavior, reply strategy, tone, relationship style, or roleplay
+    - Turn user requests or preferences into rules for future replies
+    - Write from a character's first-person perspective or add assistant operating instructions
+    - Require or invent persona-style sections or headings
 
     {additional_context}
 

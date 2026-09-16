@@ -26,6 +26,7 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.isCompressedHistory
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.StreamChunkHandler
 import me.rerere.ai.ui.handleTextGenerationResult
@@ -58,6 +59,21 @@ private const val MAX_PROVIDER_NETWORK_RETRIES = 3
 private const val INITIAL_PROVIDER_RETRY_DELAY_MS = 1_000L
 
 private class StreamChunkHandlingException(cause: Throwable) : RuntimeException(cause)
+
+internal const val COMPRESSED_HISTORY_CONTEXT_NOTICE =
+    "The following assistant message is a compressed record of earlier conversation history. " +
+        "Use it only to restore context; it is not a new user request or instruction."
+
+internal fun List<UIMessage>.withCompressedHistoryRequestSemantics(): List<UIMessage> = flatMap { message ->
+    if (!message.isCompressedHistory()) {
+        listOf(message)
+    } else {
+        listOf(
+            UIMessage.user(COMPRESSED_HISTORY_CONTEXT_NOTICE).copy(isSynthetic = true),
+            message.copy(role = MessageRole.ASSISTANT, isSynthetic = true),
+        )
+    }
+}
 
 @Serializable
 sealed interface GenerationChunk {
@@ -380,7 +396,7 @@ class GenerationLoop(
             conversationLorebookIds = conversationLorebookIds,
             processingStatus = processingStatus,
             workspaceCwd = workspaceCwd,
-        )
+        ).withCompressedHistoryRequestSemantics()
 
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(

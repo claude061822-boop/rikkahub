@@ -28,6 +28,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
@@ -35,6 +38,8 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.providers.openai.OpenAIProvider
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
@@ -110,7 +115,20 @@ internal fun createForkConversation(
 ): Conversation = Conversation(
     id = Uuid.random(),
     assistantId = source.assistantId,
-    messageNodes = messageNodes,
+    messageNodes = messageNodes.map { node ->
+        node.copy(
+            selectionRevision = 0,
+            acknowledgedSelectionRevision = -1,
+            messages = node.messages.map { message ->
+                message.copy(
+                    gatewayCandidateId = null,
+                    gatewaySelectionUrl = null,
+                    gatewaySessionId = null,
+                    gatewayProviderId = null,
+                )
+            },
+        )
+    },
     customSystemPrompt = source.customSystemPrompt,
     modeInjectionIds = source.modeInjectionIds,
     lorebookIds = source.lorebookIds,
@@ -171,6 +189,8 @@ class ChatService(
 
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
+    private val candidateSelectionLocks = ConcurrentHashMap<Uuid, Mutex>()
+    private fun candidateSelectionLock(id: Uuid) = candidateSelectionLocks.computeIfAbsent(id) { Mutex() }
     private val _sessionsVersion = MutableStateFlow(0L)
 
     // 错误状态
@@ -204,6 +224,7 @@ class ChatService(
     fun cleanup() = runCatching {
         sessions.values.forEach { it.cleanup() }
         sessions.clear()
+        candidateSelectionLocks.clear()
     }
 
     // ---- Session 管理 ----
@@ -466,6 +487,7 @@ class ChatService(
                     messageNodes = currentConversation.messageNodes + UIMessage(
                         role = MessageRole.USER,
                         parts = processedContent,
+                        gatewayTurnId = Uuid.random().toString(),
                     ).toMessageNode(),
                 )
                 saveConversation(conversationId, newConversation)
@@ -659,6 +681,9 @@ class ChatService(
         conversationId: Uuid,
         messageRange: ClosedRange<Int>? = null
     ) {
+        // A pending branch switch must finish before this call reads history or
+        // starts another provider request.
+        synchronizePendingSelections(conversationId)
         val settings = settingsStore.settingsFlow.first()
         val initialConversation = getConversationFlow(conversationId).value
         val assistant = settings.getAssistantById(initialConversation.assistantId)
@@ -794,6 +819,8 @@ class ChatService(
         }.onSuccess {
             val finalConversation = getConversationFlow(conversationId).value
             saveConversation(conversationId, finalConversation)
+
+            synchronizePendingSelections(conversationId)
 
             launchWithConversationReference(conversationId) {
                 generateTitle(conversationId, finalConversation)
@@ -1251,8 +1278,10 @@ class ChatService(
                 messages = node.messages + UIMessage(
                     role = node.role,
                     parts = processedParts,
+                    gatewayTurnId = if (node.role == MessageRole.USER) Uuid.random().toString() else null,
                 ),
-                selectIndex = node.messages.size
+                selectIndex = node.messages.size,
+                selectionRevision = node.selectionRevision + 1,
             )
         }
 
@@ -1299,27 +1328,85 @@ class ChatService(
         nodeId: Uuid,
         selectIndex: Int
     ) {
-        val currentConversation = getConversationFlow(conversationId).value
-        val targetNode = currentConversation.messageNodes.firstOrNull { it.id == nodeId }
-            ?: throw NotFoundException("Message node not found")
-
-        if (selectIndex !in targetNode.messages.indices) {
-            throw BadRequestException("Invalid selectIndex")
-        }
-
-        if (targetNode.selectIndex == selectIndex) {
-            return
-        }
-
-        val updatedNodes = currentConversation.messageNodes.map { node ->
-            if (node.id == nodeId) {
-                node.copy(selectIndex = selectIndex)
-            } else {
-                node
+        candidateSelectionLock(conversationId).withLock {
+            if (sessions[conversationId]?.generationJob?.value?.isActive == true) {
+                throw BadRequestException("Stop generation before switching candidates")
             }
-        }
+            val currentConversation = getConversationFlow(conversationId).value
+            val targetNode = currentConversation.messageNodes.firstOrNull { it.id == nodeId }
+                ?: throw NotFoundException("Message node not found")
 
-        saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
+            if (selectIndex !in targetNode.messages.indices) {
+                throw BadRequestException("Invalid selectIndex")
+            }
+
+            if (targetNode.selectIndex == selectIndex) {
+                synchronizePendingSelectionsLocked(conversationId)
+                return@withLock
+            }
+
+            val updatedNodes = currentConversation.messageNodes.map { node ->
+                if (node.id == nodeId) {
+                    node.copy(selectIndex = selectIndex, selectionRevision = node.selectionRevision + 1)
+                } else {
+                    node
+                }
+            }
+
+            saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
+            synchronizePendingSelectionsLocked(conversationId)
+        }
+    }
+
+    private suspend fun synchronizePendingSelections(conversationId: Uuid) {
+        candidateSelectionLock(conversationId).withLock {
+            synchronizePendingSelectionsLocked(conversationId)
+        }
+    }
+
+    private suspend fun synchronizePendingSelectionsLocked(conversationId: Uuid) {
+        val settings = settingsStore.settingsFlow.first()
+        val conversation = getConversationFlow(conversationId).value
+        conversation.messageNodes.forEach { node ->
+            if (node.role != MessageRole.ASSISTANT ||
+                node.selectionRevision <= node.acknowledgedSelectionRevision) return@forEach
+            val selected = node.currentMessage
+            if (selected.parts.any { it is UIMessagePart.Tool && it.isPending }) return@forEach
+            if (selected.gatewayCandidateId == null) {
+                check(node.messages.none { it.gatewayCandidateId != null }) {
+                    "Selected legacy candidate has no Gateway identity"
+                }
+                return@forEach
+            }
+            val candidateId = checkNotNull(selected.gatewayCandidateId)
+            val endpoint = checkNotNull(selected.gatewaySelectionUrl) { "Gateway selection endpoint missing" }
+            val sessionId = checkNotNull(selected.gatewaySessionId) { "Gateway session identity missing" }
+            val providerId = checkNotNull(selected.gatewayProviderId) { "Gateway provider identity missing" }
+            val provider = settings.providers.firstOrNull { it.id == providerId } as? ProviderSetting.OpenAI
+                ?: error("Gateway candidate provider is unavailable")
+            val transport = providerManager.getProviderByType(provider) as? OpenAIProvider
+                ?: error("Gateway candidate provider is unavailable")
+            var attempt = 0
+            while (true) {
+                try {
+                    transport.selectGatewayCandidate(
+                        provider, conversationId.toString(), sessionId, candidateId,
+                        endpoint, node.selectionRevision,
+                    )
+                    break
+                } catch (error: java.io.IOException) {
+                    attempt++
+                    if (attempt >= 3) throw error
+                    delay(1000L * attempt)
+                }
+            }
+            val latest = getConversationFlow(conversationId).value
+            saveConversation(conversationId, latest.copy(messageNodes = latest.messageNodes.map {
+                if (it.id == node.id && it.selectionRevision == node.selectionRevision) {
+                    it.copy(acknowledgedSelectionRevision = node.selectionRevision)
+                } else it
+            }))
+        }
     }
 
     suspend fun deleteMessage(

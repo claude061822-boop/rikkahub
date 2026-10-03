@@ -74,7 +74,9 @@ data class Conversation(
 
             val newNode = node.copy(
                 messages = newMessages,
-                selectIndex = newMessageIndex
+                selectIndex = newMessageIndex,
+                selectionRevision = node.selectionRevision +
+                    if (newMessageIndex != node.selectIndex) 1 else 0,
             )
 
             // 更新newNodes
@@ -110,6 +112,8 @@ data class MessageNode(
     val id: Uuid = Uuid.random(),
     val messages: List<UIMessage>,
     val selectIndex: Int = 0,
+    val selectionRevision: Long = 0,
+    val acknowledgedSelectionRevision: Long = -1,
     @Transient
     val isFavorite: Boolean = false,
 ) {

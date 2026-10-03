@@ -78,6 +78,49 @@ class ChatCompletionsAPI(
     private val client: OkHttpClient,
     private val keyRoulette: KeyRoulette
 ) : OpenAIImpl {
+    private fun gatewaySelectionUrl(request: Request, response: Response): String? {
+        if (response.header("X-Ombre-Candidate-Id") == null ||
+            response.header("X-Ombre-Session-Id") == null) return null
+        val path = request.url.encodedPath
+        if (!path.endsWith("/chat/completions")) return null
+        return request.url.newBuilder()
+            .encodedPath(path.removeSuffix("/completions") + "/candidate-selection")
+            .build().toString()
+    }
+
+    suspend fun selectGatewayCandidate(
+        providerSetting: ProviderSetting.OpenAI,
+        conversationId: String,
+        sessionId: String,
+        candidateId: String,
+        selectionUrl: String,
+        revision: Long,
+    ) = withContext(Dispatchers.IO) {
+        val completionUrl = "${providerSetting.baseUrl}${providerSetting.chatCompletionsPath}".toHttpUrl()
+        val path = completionUrl.encodedPath
+        require(path.endsWith("/chat/completions")) { "Provider path is no longer a Gateway completion path" }
+        val expected = completionUrl.newBuilder()
+            .encodedPath(path.removeSuffix("/completions") + "/candidate-selection")
+            .build().toString()
+        require(selectionUrl == expected) { "Gateway endpoint changed since candidate creation" }
+        val body = buildJsonObject {
+            put("candidate_id", candidateId)
+            put("revision", revision)
+        }
+        val request = Request.Builder()
+            .url(expected)
+            .post(json.encodeToString(body).toRequestBody("application/json".toMediaType()))
+            .header("Authorization", "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}")
+            .header("X-Session-ID", conversationId)
+            .header("X-Ombre-Session-Id", sessionId)
+            .build()
+        client.newCall(request).await().use { response ->
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Gateway candidate selection failed: HTTP ${response.code}")
+            }
+        }
+    }
+
     override suspend fun generateText(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
@@ -97,6 +140,8 @@ class ChatCompletionsAPI(
             .addHeader("Authorization", "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}")
             .configureReferHeaders(providerSetting.baseUrl)
             .configureSessionHeaders(providerSetting.baseUrl, params.sessionId)
+            .header("X-Ombre-Candidate-Protocol", "1")
+            .apply { params.turnId?.let { header("X-Ombre-Turn-Id", it) } }
             .build()
 
         Log.i(TAG, "generateText: ${json.encodeToString(requestBody)}")
@@ -126,7 +171,11 @@ class ChatCompletionsAPI(
             model = model,
             message = parseMessage(message),
             finishReason = finishReason,
-            usage = usage
+            usage = usage,
+            gatewayCandidateId = response.header("X-Ombre-Candidate-Id"),
+            gatewaySelectionUrl = gatewaySelectionUrl(request, response),
+            gatewaySessionId = response.header("X-Ombre-Session-Id"),
+            gatewayProviderId = if (response.header("X-Ombre-Candidate-Id") != null) providerSetting.id else null,
         )
     }
 
@@ -150,6 +199,8 @@ class ChatCompletionsAPI(
             .addHeader("Content-Type", "application/json")
             .configureReferHeaders(providerSetting.baseUrl)
             .configureSessionHeaders(providerSetting.baseUrl, params.sessionId)
+            .header("X-Ombre-Candidate-Protocol", "1")
+            .apply { params.turnId?.let { header("X-Ombre-Turn-Id", it) } }
             .build()
 
         Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")
@@ -168,6 +219,17 @@ class ChatCompletionsAPI(
         }
 
         val listener = object : EventSourceListener() {
+            override fun onOpen(eventSource: EventSource, response: Response) {
+                val candidateId = response.header("X-Ombre-Candidate-Id")
+                val selectionUrl = gatewaySelectionUrl(request, response)
+                val sessionId = response.header("X-Ombre-Session-Id")
+                if (candidateId != null && selectionUrl != null && sessionId != null) {
+                    trySend(StreamChunk.GatewayCandidate(
+                        candidateId, selectionUrl, sessionId, providerSetting.id,
+                    ))
+                }
+            }
+
             override fun onEvent(
                 eventSource: EventSource,
                 id: String?,

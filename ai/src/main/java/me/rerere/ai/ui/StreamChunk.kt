@@ -15,6 +15,14 @@ import me.rerere.ai.core.TokenUsage
 @Serializable
 sealed class StreamChunk {
     @Serializable
+    @SerialName("gateway_candidate")
+    data class GatewayCandidate(
+        val candidateId: String,
+        val selectionUrl: String,
+        val sessionId: String,
+        val providerId: kotlin.uuid.Uuid,
+    ) : StreamChunk()
+    @Serializable
     @SerialName("text_start")
     data class TextStart(
         val id: String,

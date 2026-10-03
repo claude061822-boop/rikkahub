@@ -62,6 +62,10 @@ data class TextGenerationResult(
     val message: UIMessage,
     val finishReason: String? = null,
     val usage: TokenUsage? = null,
+    val gatewayCandidateId: String? = null,
+    val gatewaySelectionUrl: String? = null,
+    val gatewaySessionId: String? = null,
+    val gatewayProviderId: Uuid? = null,
 )
 
 @Serializable
@@ -75,6 +79,7 @@ data class TextGenerationParams(
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
     val sessionId: String? = Uuid.random().toString(),
+    val turnId: String? = null,
 )
 
 @Serializable

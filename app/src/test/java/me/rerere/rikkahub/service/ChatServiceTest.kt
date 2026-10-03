@@ -9,6 +9,8 @@ import me.rerere.ai.provider.Model
 import me.rerere.rikkahub.data.ai.tools.shouldUseExternalWebSearch
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.ai.ui.UIMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -17,6 +19,24 @@ import org.junit.Test
 import kotlin.uuid.Uuid
 
 class ChatServiceTest {
+    @Test
+    fun `fork drops candidate receipts tied to source conversation`() {
+        val assistant = UIMessage.assistant("B1").copy(
+            gatewayCandidateId = "candidate-1",
+            gatewaySelectionUrl = "https://gateway.example/v1/chat/candidate-selection",
+            gatewaySessionId = "source-session",
+            gatewayProviderId = Uuid.random(),
+        )
+        val source = Conversation(assistantId = Uuid.random(), messageNodes = emptyList())
+        val fork = createForkConversation(source, listOf(MessageNode(
+            messages = listOf(assistant), selectionRevision = 3, acknowledgedSelectionRevision = 2,
+        )))
+        val node = fork.messageNodes.single()
+        assertEquals(0L, node.selectionRevision)
+        assertEquals(-1L, node.acknowledgedSelectionRevision)
+        assertEquals(null, node.currentMessage.gatewayCandidateId)
+    }
+
     @Test
     fun `fork conversation inherits folder and workspace context`() {
         val source = Conversation(

@@ -415,6 +415,8 @@ class GenerationLoop(
                 addAll(model.customBodies)
             },
             sessionId = (conversationId ?: Uuid.random()).toString(),
+            turnId = messages.lastOrNull { it.role == MessageRole.USER && !it.isSynthetic }
+                ?.gatewayTurnId?.let { "${conversationId}:$it" },
         )
         try {
             if (stream) {

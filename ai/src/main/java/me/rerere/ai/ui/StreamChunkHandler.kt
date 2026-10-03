@@ -80,6 +80,12 @@ class StreamChunkHandler(private val model: Model? = null) {
 
     private fun append(message: UIMessage, chunk: StreamChunk): UIMessage = with(message) {
         when (chunk) {
+            is StreamChunk.GatewayCandidate -> copy(
+                gatewayCandidateId = chunk.candidateId,
+                gatewaySelectionUrl = chunk.selectionUrl,
+                gatewaySessionId = chunk.sessionId,
+                gatewayProviderId = chunk.providerId,
+            )
             is StreamChunk.TextStart -> {
                 if (chunk.id in textPartIndexes) this
                 else copy(parts = parts + UIMessagePart.Text("", chunk.metadata)).also {
@@ -329,11 +335,19 @@ fun List<UIMessage>.handleTextGenerationResult(
         modelId = model?.id,
         usage = result.usage,
         finishedAt = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()),
+        gatewayCandidateId = result.gatewayCandidateId,
+        gatewaySelectionUrl = result.gatewaySelectionUrl,
+        gatewaySessionId = result.gatewaySessionId,
+        gatewayProviderId = result.gatewayProviderId,
     ).finishReasoning()
     return if (last().role != incoming.role) {
         this + incoming
     } else {
         dropLast(1) + last().appendMessage(incoming).copy(
+            gatewayCandidateId = incoming.gatewayCandidateId,
+            gatewaySelectionUrl = incoming.gatewaySelectionUrl,
+            gatewaySessionId = incoming.gatewaySessionId,
+            gatewayProviderId = incoming.gatewayProviderId,
             modelId = model?.id ?: last().modelId,
             usage = last().usage.merge(result.usage ?: TokenUsage()),
             finishedAt = incoming.finishedAt,

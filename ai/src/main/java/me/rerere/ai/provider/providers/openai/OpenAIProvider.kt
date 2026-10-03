@@ -54,6 +54,17 @@ class OpenAIProvider(
     private val chatCompletionsAPI = ChatCompletionsAPI(client = client, keyRoulette = keyRoulette)
     private val responseAPI = ResponseAPI(client = client, keyRoulette = keyRoulette)
 
+    suspend fun selectGatewayCandidate(
+        providerSetting: ProviderSetting.OpenAI,
+        conversationId: String,
+        sessionId: String,
+        candidateId: String,
+        selectionUrl: String,
+        revision: Long,
+    ) = chatCompletionsAPI.selectGatewayCandidate(
+        providerSetting, conversationId, sessionId, candidateId, selectionUrl, revision,
+    )
+
 
     override suspend fun listModels(providerSetting: ProviderSetting.OpenAI): List<Model> =
         withContext(Dispatchers.IO) {

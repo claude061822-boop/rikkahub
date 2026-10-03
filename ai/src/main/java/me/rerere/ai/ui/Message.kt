@@ -25,6 +25,14 @@ data class UIMessage(
     val modelId: Uuid? = null,
     val usage: TokenUsage? = null,
     val translation: String? = null,
+    // Opaque receipt issued by Symbiosis Gateway for a completed candidate.
+    val gatewayCandidateId: String? = null,
+    val gatewaySelectionUrl: String? = null,
+    val gatewaySessionId: String? = null,
+    val gatewayProviderId: Uuid? = null,
+    // Present only on user turns created by this protocol. Legacy turns retain
+    // Gateway's existing history identity when regenerated after an upgrade.
+    val gatewayTurnId: String? = null,
     // 请求期间生成的内部消息；该标记仅在内存中使用
     @Transient
     val isSynthetic: Boolean = false,

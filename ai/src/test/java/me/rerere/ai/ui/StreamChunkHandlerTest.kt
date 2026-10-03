@@ -16,6 +16,39 @@ class StreamChunkHandlerTest {
     private val model = Model(modelId = "test-model")
 
     @Test
+    fun `non streaming result retains the gateway candidate receipt`() {
+        val providerId = kotlin.uuid.Uuid.random()
+        val result = TextGenerationResult(
+            id = "response-1", model = model.modelId,
+            message = UIMessage.assistant("B1"),
+            gatewayCandidateId = "candidate-1",
+            gatewaySelectionUrl = "https://gateway.example/v1/chat/candidate-selection",
+            gatewaySessionId = "session-1",
+            gatewayProviderId = providerId,
+        )
+        val message = listOf(UIMessage.user("A")).handleTextGenerationResult(result, model).last()
+        assertEquals("candidate-1", message.gatewayCandidateId)
+        assertEquals(providerId, message.gatewayProviderId)
+    }
+
+    @Test
+    fun `stream candidate receipt follows the final response across tool steps`() {
+        val providerId = kotlin.uuid.Uuid.random()
+        val handler = StreamChunkHandler(model)
+        var messages = listOf(UIMessage.user("question"), UIMessage.assistant(""))
+        messages = handler.handle(messages, StreamChunk.GatewayCandidate(
+            "tool-attempt", "https://gateway.example/v1/chat/candidate-selection", "session-1", providerId,
+        ))
+        messages = handler.handle(messages, StreamChunk.TextDelta("text", "answer"))
+        messages = handler.handle(messages, StreamChunk.GatewayCandidate(
+            "final-attempt", "https://gateway.example/v1/chat/candidate-selection", "session-1", providerId,
+        ))
+        assertEquals("final-attempt", messages.last().gatewayCandidateId)
+        assertEquals("session-1", messages.last().gatewaySessionId)
+        assertEquals(providerId, messages.last().gatewayProviderId)
+    }
+
+    @Test
     fun `text lifecycle should create and update assistant message`() {
         var messages = listOf(UIMessage.user("hello"))
         val handler = StreamChunkHandler(model)

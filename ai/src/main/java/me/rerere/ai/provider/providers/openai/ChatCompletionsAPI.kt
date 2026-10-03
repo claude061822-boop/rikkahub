@@ -165,6 +165,10 @@ class ChatCompletionsAPI(
             ?.content
             ?: "unknown"
         val usage = parseTokenUsage(bodyJson["usage"] as? JsonObject)
+        val candidateId = response.header("X-Ombre-Candidate-Id")
+        if (candidateId != null && response.header("X-Ombre-Candidate-State") != "committed") {
+            throw java.io.IOException("Gateway candidate receipt was not committed")
+        }
 
         TextGenerationResult(
             id = id,
@@ -172,10 +176,10 @@ class ChatCompletionsAPI(
             message = parseMessage(message),
             finishReason = finishReason,
             usage = usage,
-            gatewayCandidateId = response.header("X-Ombre-Candidate-Id"),
+            gatewayCandidateId = candidateId,
             gatewaySelectionUrl = gatewaySelectionUrl(request, response),
             gatewaySessionId = response.header("X-Ombre-Session-Id"),
-            gatewayProviderId = if (response.header("X-Ombre-Candidate-Id") != null) providerSetting.id else null,
+            gatewayProviderId = if (candidateId != null) providerSetting.id else null,
         )
     }
 
@@ -218,13 +222,20 @@ class ChatCompletionsAPI(
             }
         }
 
+        var receipt: GatewayCandidateStreamReceipt? = null
         val listener = object : EventSourceListener() {
             override fun onOpen(eventSource: EventSource, response: Response) {
                 val candidateId = response.header("X-Ombre-Candidate-Id")
                 val selectionUrl = gatewaySelectionUrl(request, response)
                 val sessionId = response.header("X-Ombre-Session-Id")
-                if (candidateId != null && selectionUrl != null && sessionId != null) {
-                    trySend(StreamChunk.GatewayCandidate(
+                if (candidateId != null) {
+                    if (selectionUrl == null || sessionId == null ||
+                        response.header("X-Ombre-Candidate-State") != "provisional") {
+                        close(java.io.IOException("Gateway candidate state is missing"))
+                        eventSource.cancel()
+                        return
+                    }
+                    receipt = GatewayCandidateStreamReceipt(StreamChunk.GatewayCandidate(
                         candidateId, selectionUrl, sessionId, providerSetting.id,
                     ))
                 }
@@ -238,9 +249,15 @@ class ChatCompletionsAPI(
             ) {
                 Log.d(TAG, "onEvent: $data")
                 try {
+                    if (type == "ombre.candidate-committed") {
+                        trySend(requireNotNull(receipt).commit(data.trim()))
+                        close()
+                        return
+                    }
                     val result = decoder.accept(SseEvent(id = id, event = type, data = data))
                     sendChunks(result.chunks)
-                    if (result.completed) close()
+                    receipt?.observe(result.chunks, result.completed)
+                    if (result.completed && receipt == null) close()
                 } catch (e: Throwable) {
                     close(e)
                 }
@@ -265,13 +282,18 @@ class ChatCompletionsAPI(
                     e.printStackTrace()
                     exception = e
                 } finally {
-                    close(exception)
+                    close(exception ?: if (receipt != null) java.io.IOException("Gateway candidate stream failed") else null)
                 }
             }
 
             override fun onClosed(eventSource: EventSource) {
                 sendChunks(decoder.onClosed())
-                close()
+                try {
+                    receipt?.verifyClosed()
+                    close()
+                } catch (error: java.io.IOException) {
+                    close(error)
+                }
             }
         }
 

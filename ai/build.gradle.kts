@@ -7,6 +7,9 @@ plugins {
 
 android {
     namespace = "me.rerere.ai"
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 
     defaultConfig {
 //        externalNativeBuild {

@@ -15,6 +15,10 @@ plugins {
 }
 
 android {
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     namespace = "me.rerere.rikkahub"
     compileSdk = 37
 
@@ -300,6 +304,7 @@ dependencies {
 
     // tests
     testImplementation(libs.junit)
+    testImplementation("io.mockk:mockk:1.14.11")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

@@ -39,6 +39,17 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
+internal fun createHeaderLoggingInterceptor(
+    logger: HttpLoggingInterceptor.Logger = HttpLoggingInterceptor.Logger.DEFAULT,
+): HttpLoggingInterceptor = HttpLoggingInterceptor(logger).apply {
+    redactHeader("Authorization")
+    redactHeader("Proxy-Authorization")
+    redactHeader("x-api-key")
+    redactHeader("api-key")
+    redactHeader("x-goog-api-key")
+    level = HttpLoggingInterceptor.Level.HEADERS
+}
+
 val dataSourceModule = module {
     single {
         SettingsStore(context = get(), scope = get())
@@ -179,10 +190,7 @@ val dataSourceModule = module {
             }
             .addNetworkInterceptor(RequestLoggingInterceptor())
             .addInterceptor(AIRequestInterceptor())
-            .addInterceptor(HttpLoggingInterceptor().apply {
-                redactHeader("Proxy-Authorization")
-                level = HttpLoggingInterceptor.Level.HEADERS
-            })
+            .addInterceptor(createHeaderLoggingInterceptor())
             .build()
         client.also { SearchService.init(it, get()) }
     }

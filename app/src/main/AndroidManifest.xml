@@ -160,6 +160,11 @@
         android:value="androidx.startup"
         tools:node="remove" />
     </provider>
+    <!-- Explicit, one-shot metadata trace. No intent filter; adb shell requires DUMP. -->
+    <receiver
+      android:name=".diagnostics.IncomingProvenanceReceiver"
+      android:exported="true"
+      android:permission="android.permission.DUMP" />
   </application>
 
 </manifest>

@@ -19,6 +19,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
+import me.rerere.ai.diagnostics.IncomingProvenanceTrace
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderManager
@@ -103,11 +104,13 @@ class GenerationLoop(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        provenanceTrace: IncomingProvenanceTrace? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
 
         var messages: List<UIMessage> = messages
+        var pendingTrace = provenanceTrace
 
         for (stepIndex in 0 until maxSteps) {
             Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
@@ -121,7 +124,10 @@ class GenerationLoop(
 
             // Skip generation if we have approved/denied tool calls to handle
             if (pendingTools.isEmpty()) {
+                val requestTrace = pendingTrace
+                pendingTrace = null // Only the first provider request; retries retain its sidecar.
                 generateInternal(
+                    provenanceTrace = requestTrace,
                     assistant = assistant,
                     settings = settings,
                     messages = messages,
@@ -358,6 +364,7 @@ class GenerationLoop(
         conversationModeInjectionIds: Set<Uuid> = emptySet(),
         conversationLorebookIds: Set<Uuid> = emptySet(),
         workspaceCwd: String? = null,
+        provenanceTrace: IncomingProvenanceTrace? = null,
     ) {
         val internalMessages = buildList {
             val system = buildString {
@@ -386,7 +393,8 @@ class GenerationLoop(
                 add(UIMessage.system(prompt = system).copy(isSynthetic = true))
             }
             addAll(messages.limitContext(assistant.contextMessageLimit))
-        }.transforms(
+        }.also { provenanceTrace?.stage("pre_transform", it) }.transforms(
+            provenanceTrace = provenanceTrace,
             transformers = transformers,
             context = context,
             model = model,
@@ -396,10 +404,17 @@ class GenerationLoop(
             conversationLorebookIds = conversationLorebookIds,
             processingStatus = processingStatus,
             workspaceCwd = workspaceCwd,
-        ).withCompressedHistoryRequestSemantics()
+        ).let { before ->
+            provenanceTrace?.stage("pre_compressed_semantics", before)
+            before.withCompressedHistoryRequestSemantics().also { after ->
+                provenanceTrace?.compressedSemantics(before, after)
+            }
+        }
+        provenanceTrace?.stage("provider_input", internalMessages)
 
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(
+            provenanceTrace = provenanceTrace,
             model = model,
             temperature = assistant.temperature,
             topP = assistant.topP,

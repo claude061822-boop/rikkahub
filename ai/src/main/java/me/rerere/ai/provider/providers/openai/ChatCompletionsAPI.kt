@@ -31,6 +31,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
+import me.rerere.ai.diagnostics.IncomingProvenanceTrace
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
@@ -144,7 +145,7 @@ class ChatCompletionsAPI(
             .apply { params.turnId?.let { header("X-Ombre-Turn-Id", it) } }
             .build()
 
-        Log.i(TAG, "generateText: ${json.encodeToString(requestBody)}")
+        Log.i(TAG, "generateText: request prepared")
 
         val response = client.newCall(request).await()
         if (!response.isSuccessful) {
@@ -207,7 +208,7 @@ class ChatCompletionsAPI(
             .apply { params.turnId?.let { header("X-Ombre-Turn-Id", it) } }
             .build()
 
-        Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")
+        Log.i(TAG, "streamText: request prepared")
 
         // just for debugging response body
         // println(client.newCall(request).await().body?.string())
@@ -217,7 +218,7 @@ class ChatCompletionsAPI(
         fun sendChunks(chunks: Iterable<StreamChunk>) {
             chunks.forEach { chunk ->
                 trySend(chunk).onFailure { e ->
-                    Log.w(TAG, "onEvent: chunk dropped (${e?.message})")
+                    Log.w(TAG, "onEvent: chunk dropped")
                 }
             }
         }
@@ -247,7 +248,7 @@ class ChatCompletionsAPI(
                 type: String?,
                 data: String
             ) {
-                Log.d(TAG, "onEvent: $data")
+                Log.d(TAG, "onEvent: received")
                 try {
                     if (type == "ombre.candidate-committed") {
                         trySend(requireNotNull(receipt).commit(data.trim()))
@@ -266,20 +267,17 @@ class ChatCompletionsAPI(
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
                 var exception = t
 
-                t?.printStackTrace()
-                println("[onFailure] 发生错误: ${t?.javaClass?.name} ${t?.message} / $response")
+                Log.w(TAG, "onFailure: transport failed")
 
                 val bodyRaw = response?.body?.stringSafe()
                 try {
                     if (!bodyRaw.isNullOrBlank()) {
                         val bodyElement = Json.parseToJsonElement(bodyRaw)
-                        println(bodyElement)
                         exception = bodyElement.parseErrorDetail()
-                        Log.i(TAG, "onFailure: $exception")
+                        Log.i(TAG, "onFailure: provider error received")
                     }
                 } catch (e: Throwable) {
-                    Log.w(TAG, "onFailure: failed to parse from $bodyRaw")
-                    e.printStackTrace()
+                    Log.w(TAG, "onFailure: error body parsing failed")
                     exception = e
                 } finally {
                     close(exception ?: if (receipt != null) java.io.IOException("Gateway candidate stream failed") else null)
@@ -314,6 +312,7 @@ class ChatCompletionsAPI(
     ): JsonObject {
         val host = providerSetting.baseUrl.toHttpUrl().host
         val isOpenRouter = host == "openrouter.ai"
+        params.provenanceTrace?.beginSerialization()
         return buildJsonObject {
             put("model", params.model.modelId)
             put(
@@ -323,6 +322,7 @@ class ChatCompletionsAPI(
                     includeHistoryReasoning = providerSetting.includeHistoryReasoning,
                     includeOpenRouterReasoningDetails = isOpenRouter,
                     supportInputModalities = params.model.inputModalities,
+                    trace = params.provenanceTrace,
                 )
             )
 
@@ -521,7 +521,9 @@ class ChatCompletionsAPI(
                     }
                 }
             }
-        }.mergeCustomBody(params.customBody)
+        }.mergeCustomBody(params.customBody).also {
+            params.provenanceTrace?.finalPayload(it, params.customBody, "messages")
+        }
     }
 
     private fun isModelAllowTemperature(model: Model): Boolean {
@@ -539,19 +541,33 @@ class ChatCompletionsAPI(
         includeHistoryReasoning: Boolean = true,
         includeOpenRouterReasoningDetails: Boolean = false,
         supportInputModalities: List<Modality> = listOf(Modality.TEXT, Modality.IMAGE),
+    ) = buildMessages(messages, includeHistoryReasoning, includeOpenRouterReasoningDetails, supportInputModalities, null)
+
+    private fun buildMessages(
+        messages: List<UIMessage>,
+        includeHistoryReasoning: Boolean,
+        includeOpenRouterReasoningDetails: Boolean,
+        supportInputModalities: List<Modality>,
+        trace: IncomingProvenanceTrace?,
     ) = buildJsonArray {
         val filteredMessages = messages.filter { it.isValidToUpload() }
 
         filteredMessages.forEach { message ->
-            if (message.role == MessageRole.ASSISTANT) {
-                addAssistantMessages(
-                    message = message,
-                    includeReasoning = includeHistoryReasoning,
-                    includeOpenRouterReasoningDetails = includeOpenRouterReasoningDetails,
-                    supportInputModalities = supportInputModalities,
-                )
-            } else {
-                addNonAssistantMessage(message)
+            val append: JsonArrayBuilder.() -> Unit = {
+                if (message.role == MessageRole.ASSISTANT) {
+                    addAssistantMessages(
+                        message = message,
+                        includeReasoning = includeHistoryReasoning,
+                        includeOpenRouterReasoningDetails = includeOpenRouterReasoningDetails,
+                        supportInputModalities = supportInputModalities,
+                    )
+                } else {
+                    addNonAssistantMessage(message)
+                }
+            }
+            if (trace == null) append() else buildJsonArray(append).forEach { item ->
+                add(item)
+                trace.serialized(message, item)
             }
         }
     }

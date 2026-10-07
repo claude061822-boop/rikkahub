@@ -213,7 +213,7 @@ class ChatServiceCandidateBarrierIntegrationTest {
         val context = mockk<Application>(relaxed = true)
         val generationMock = mockk<GenerationLoop>()
         val started = CompletableDeferred<List<UIMessage>>()
-        every { generationMock.generateText(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+        every { generationMock.generateText(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers {
             started.complete(thirdArg())
             emptyFlow<GenerationChunk>()
         }

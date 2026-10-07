@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.ai.transformers
 
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
+import me.rerere.ai.diagnostics.IncomingProvenanceTrace
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.datastore.Settings
@@ -61,6 +62,18 @@ interface OutputMessageTransformer : MessageTransformer {
     }
 }
 
+// Stable diagnostic names survive release obfuscation without changing transformer execution.
+private fun MessageTransformer.provenanceName(): String = when (this) {
+    is TimeReminderTransformer -> "TimeReminderTransformer"
+    is PromptInjectionTransformer -> "PromptInjectionTransformer"
+    is PlaceholderTransformer -> "PlaceholderTransformer"
+    is DocumentAsPromptTransformer -> "DocumentAsPromptTransformer"
+    is OcrTransformer -> "OcrTransformer"
+    is TemplateTransformer -> "TemplateTransformer"
+    is WorkspaceReminderTransformer -> "WorkspaceReminderTransformer"
+    else -> javaClass.name
+}
+
 suspend fun List<UIMessage>.transforms(
     transformers: List<MessageTransformer>,
     context: Context,
@@ -71,6 +84,7 @@ suspend fun List<UIMessage>.transforms(
     conversationLorebookIds: Set<Uuid> = emptySet(),
     processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
     workspaceCwd: String? = null,
+    provenanceTrace: IncomingProvenanceTrace? = null,
 ): List<UIMessage> {
     val ctx = TransformerContext(
         context = context,
@@ -83,7 +97,9 @@ suspend fun List<UIMessage>.transforms(
         workspaceCwd = workspaceCwd,
     )
     return transformers.fold(this) { acc, transformer ->
-        transformer.transform(ctx, acc)
+        val transformed = transformer.transform(ctx, acc)
+        provenanceTrace?.transformed(transformer.provenanceName(), acc, transformed)
+        transformed
     }
 }
 

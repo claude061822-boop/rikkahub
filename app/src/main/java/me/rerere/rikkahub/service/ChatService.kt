@@ -34,6 +34,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
+import me.rerere.ai.diagnostics.IncomingProvenanceSwitch
+import me.rerere.ai.diagnostics.IncomingProvenanceTrace
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderManager
@@ -54,6 +56,7 @@ import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationLoop
 import me.rerere.rikkahub.data.ai.TranslationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.recordSelectedHistory
 import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
 import me.rerere.rikkahub.data.ai.tools.InvalidMcpServerNamesException
 import me.rerere.rikkahub.data.ai.tools.shouldUseExternalWebSearch
@@ -741,17 +744,30 @@ class ChatService(
 
             // start generating
             val session = getOrCreateSession(conversationId)
+            val selectedHistory = conversation.currentMessages.let {
+                if (messageRange != null) it.subList(messageRange.start, messageRange.endInclusive + 1) else it
+            }
+            val provenanceTrace = if (IncomingProvenanceSwitch.consume(conversationId.toString())) {
+                val traceProvider = model.findProvider(settings.providers)
+                val traceTurnId = selectedHistory.lastOrNull { it.role == MessageRole.USER && !it.isSynthetic }
+                    ?.gatewayTurnId?.let { "${conversationId}:$it" }
+                IncomingProvenanceTrace(
+                    conversationId = conversationId.toString(), turnId = traceTurnId,
+                    provider = traceProvider?.id.toString(), model = model.modelId,
+                    providerApi = when (traceProvider) {
+                        is ProviderSetting.OpenAI -> if (traceProvider.useResponseApi) "responses" else "chat_completions"
+                        else -> "unsupported"
+                    },
+                ).also { trace ->
+                    recordSelectedHistory(trace, conversation, assistant, selectedHistory)
+                }
+            } else null
             generationLoop.generateText(
+                provenanceTrace = provenanceTrace,
                 settings = settings,
                 model = model,
                 processingStatus = session.processingStatus,
-                messages = conversation.currentMessages.let {
-                    if (messageRange != null) {
-                        it.subList(messageRange.start, messageRange.endInclusive + 1)
-                    } else {
-                        it
-                    }
-                },
+                messages = selectedHistory,
                 assistant = assistant,
                 conversationId = conversationId,
                 conversationSystemPrompt = conversation.customSystemPrompt,

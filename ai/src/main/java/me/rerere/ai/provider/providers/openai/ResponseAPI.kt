@@ -28,6 +28,7 @@ import kotlinx.serialization.json.putJsonArray
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
+import me.rerere.ai.diagnostics.IncomingProvenanceTrace
 import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
@@ -101,7 +102,7 @@ class ResponseAPI(
             .configureSessionHeaders(providerSetting.baseUrl, params.sessionId)
             .build()
 
-        Log.i(TAG, "generateText: ${json.encodeToString(requestBody)}")
+        Log.i(TAG, "generateText: request prepared")
 
         // await() waits for the response headers; reading the body can still block.
         client.newCall(request).await().use { response ->
@@ -110,7 +111,7 @@ class ResponseAPI(
             }
 
             val bodyStr = response.body.string()
-            Log.i(TAG, "generateText: $bodyStr")
+            Log.i(TAG, "generateText: response received")
             val bodyJson = json.parseToJsonElement(bodyStr).jsonObject
             parseResponseOutput(bodyJson)
         }
@@ -139,14 +140,14 @@ class ResponseAPI(
             .configureSessionHeaders(providerSetting.baseUrl, params.sessionId)
             .build()
 
-        Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")
+        Log.i(TAG, "streamText: request prepared")
 
         val decoder = ResponseApiStreamDecoder()
 
         fun sendChunks(chunks: Iterable<StreamChunk>) {
             chunks.forEach { chunk ->
                 trySend(chunk).onFailure { e ->
-                    Log.w(TAG, "onEvent: chunk dropped (${e?.message})")
+                    Log.w(TAG, "onEvent: chunk dropped")
                 }
             }
         }
@@ -158,7 +159,7 @@ class ResponseAPI(
                 type: String?,
                 data: String
             ) {
-                Log.d(TAG, "onEvent: $id/$type $data")
+                Log.d(TAG, "onEvent: received")
                 try {
                     val result = decoder.accept(SseEvent(id = id, event = type, data = data))
                     sendChunks(result.chunks)
@@ -171,20 +172,17 @@ class ResponseAPI(
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
                 var exception = t
 
-                t?.printStackTrace()
-                println("[onFailure] 发生错误: ${t?.javaClass?.name} ${t?.message} / $response")
+                Log.w(TAG, "onFailure: transport failed")
 
                 val bodyRaw = response?.body?.stringSafe()
                 try {
                     if (!bodyRaw.isNullOrBlank()) {
                         val bodyElement = Json.parseToJsonElement(bodyRaw)
-                        println(bodyElement)
                         exception = bodyElement.parseErrorDetail()
-                        Log.i(TAG, "onFailure: $exception")
+                        Log.i(TAG, "onFailure: provider error received")
                     }
                 } catch (e: Throwable) {
-                    Log.w(TAG, "onFailure: failed to parse from $bodyRaw")
-                    e.printStackTrace()
+                    Log.w(TAG, "onFailure: error body parsing failed")
                 } finally {
                     close(exception)
                 }
@@ -214,6 +212,7 @@ class ResponseAPI(
     ): JsonObject {
         val host = providerSetting.baseUrl.toHttpUrl().host
         val capabilities = resolveResponseProviderCapabilities(host)
+        params.provenanceTrace?.beginSerialization()
         return buildJsonObject {
             put("model", params.model.modelId)
             put("stream", stream)
@@ -234,7 +233,7 @@ class ResponseAPI(
             }
 
             // messages
-            put("input", buildMessages(messages))
+            put("input", buildMessages(messages, params.provenanceTrace))
 
             // reasoning
             if (params.model.abilities.contains(ModelAbility.REASONING)) {
@@ -297,10 +296,14 @@ class ResponseAPI(
                     }
                 }
             }
-        }.mergeCustomBody(params.customBody)
+        }.mergeCustomBody(params.customBody).also {
+            params.provenanceTrace?.finalPayload(it, params.customBody, "input")
+        }
     }
 
-    internal fun buildMessages(messages: List<UIMessage>) = buildJsonArray {
+    internal fun buildMessages(messages: List<UIMessage>) = buildMessages(messages, null)
+
+    private fun buildMessages(messages: List<UIMessage>, trace: IncomingProvenanceTrace?) = buildJsonArray {
         messages
             .filter { message ->
                 message.role != MessageRole.SYSTEM && (
@@ -311,10 +314,12 @@ class ResponseAPI(
                 )
             }
             .forEach { message ->
-                if (message.role == MessageRole.ASSISTANT) {
-                    addAssistantItems(message)
-                } else {
-                    addUserItems(message)
+                val append: JsonArrayBuilder.() -> Unit = {
+                    if (message.role == MessageRole.ASSISTANT) addAssistantItems(message) else addUserItems(message)
+                }
+                if (trace == null) append() else buildJsonArray(append).forEach { item ->
+                    add(item)
+                    trace.serialized(message, item)
                 }
             }
     }
@@ -542,7 +547,6 @@ class ResponseAPI(
     }
 
     internal fun parseResponseOutput(jsonObject: JsonObject): TextGenerationResult {
-        println(jsonObject)
         val outputs = jsonObject["output"]?.jsonArray ?: error("output not found")
         val parts = arrayListOf<UIMessagePart>()
 
